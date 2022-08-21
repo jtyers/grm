@@ -22,16 +22,6 @@ DEFAULT_PATH_RULES = [
         "type": "split",
         "exact_match": "/",
     },
-    {
-        "type": "split",
-        "exact_match": "-tf-modules-",
-        "insert": "tf-modules",
-    },
-    {
-        "type": "split",
-        "exact_match": "-tf-live",
-        "insert": "tf-live",
-    },
 ]
 
 DEFAULTS = {

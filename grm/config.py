@@ -12,7 +12,7 @@ def load_config(config_file):
         with open(config_file, "r") as f:
             result = yaml.safe_load(f)
 
-    result = deep_merge_dicts(result, DEFAULTS)
+    result = deep_merge_dicts(DEFAULTS, result)
 
     if result["include_default_path_rules"]:
         result["path_rules"] = DEFAULT_PATH_RULES + result["path_rules"]
