@@ -15,24 +15,50 @@ def do_clone(args, unparsed_args):
     target_directory = process_path_rules(config["path_rules"], args.repo)
     target_directory = os.path.join(config["repo_root"], *target_directory)
 
-    cmd = [
-        "git",
-        "clone",
-        args.repo,
-        target_directory,
-    ]
+    if os.path.exists(target_directory):
+        if not args.auto_pull:
+            sys.exit(
+                f"directory {target_directory} already exists, use --auto-pull to pull instead"
+            )
 
-    if args.depth is not None:
-        if args.depth != -1:
-            cmd.append(f"--depth={args.depth}")
-    elif config["clone"]["default_depth"] != -1:
-        cmd.append(f"--depth={config['clone']['default_depth']}")
+        # check it's for the same repo
+        try:
+            p = subprocess.run(
+                ["git", "-C", target_directory, "config", "remote.origin.url"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
 
-    cmd.extend(unparsed_args)
+            target_directory_repo = p.stdout.strip()
 
-    print(cmd)
+        except subprocess.CalledProcessError as ex:
+            sys.exit(f"error while trying to auto-pull {target_directory}: {ex.stderr}")
 
-    subprocess.run(cmd)
+        if target_directory_repo != args.repo:
+            print(f"{target_directory_repo} != {args.repo}", file=sys.stderr)
+            sys.exit(
+                f"error while trying to auto-pull: a different repository is checked out at {target_directory}"
+            )
+
+        subprocess.run(["git", "-C", target_directory, "pull", "--ff-only"])
+
+    else:
+        cmd = [
+            "git",
+            "clone",
+            args.repo,
+            target_directory,
+        ]
+
+        if args.depth is not None:
+            if args.depth != -1:
+                cmd.append(f"--depth={args.depth}")
+        elif config["clone"]["default_depth"] != -1:
+            cmd.append(f"--depth={config['clone']['default_depth']}")
+
+        cmd.extend(unparsed_args)
+        subprocess.run(cmd)
 
 
 def main(args=None):
@@ -44,9 +70,6 @@ def main(args=None):
     )
 
     args, unparsed_args = parser.parse_known_args()
-
-    print(args)
-    print(unparsed_args)
 
     args.func(args, unparsed_args)
 

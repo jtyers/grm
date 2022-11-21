@@ -19,6 +19,11 @@ def create_argparser(do_clone):
         + "configured path rules",
     )
     sp_clone.add_argument("--depth", type=int, help="Only clone to this depth")
+    sp_clone.add_argument(
+        "--auto-pull",
+        action="store_true",
+        help="If specified and the local repo already exists, pull the latest commits from the default origin instead",
+    )
     sp_clone.add_argument("repo", help="Repo to clone")
 
     sp_clone.set_defaults(func=do_clone)
