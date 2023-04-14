@@ -2,7 +2,7 @@ import argparse
 import os
 
 
-def create_argparser(do_clone, do_hub_create):
+def create_argparser(do_clone, do_hub_create, do_update):
     # create the top-level parser
     parser = argparse.ArgumentParser(prog="grm", allow_abbrev=False)
     parser.add_argument(
@@ -46,5 +46,15 @@ def create_argparser(do_clone, do_hub_create):
     )
 
     sp_hub_create.set_defaults(func=do_hub_create)
+
+    sp_update = subparsers.add_parser(
+        "update",
+        help="Updates all repositories",
+    )
+    sp_update.add_argument("--root", help="Override the repository root")
+    sp_update.add_argument("--method", help="Override the update method")
+    sp_update.add_argument("repo", default=None, help="Only clone repos with this name")
+
+    sp_update.set_defaults(func=do_update)
 
     return parser

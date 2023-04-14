@@ -109,6 +109,10 @@ def do_hub_create(args, unparsed_args):
     subprocess.run(shlex.join(cmd), shell=True)
 
 
+def do_update(args, unparsed_args):
+    raise NotImplementedError()
+
+
 def main(args=None):
     if args is None:
         args = sys.argv[1:]
@@ -116,6 +120,7 @@ def main(args=None):
     parser = create_argparser(
         do_clone=do_clone,
         do_hub_create=do_hub_create,
+        do_update=do_update,
     )
 
     args, unparsed_args = parser.parse_known_args()
