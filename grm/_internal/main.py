@@ -2,6 +2,7 @@
 
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 
@@ -66,15 +67,29 @@ def do_clone(args, unparsed_args):
 def do_hub_create(args, unparsed_args):
     config = load_config(args.config)
     repo_root = config["repo_root"]
-    hub_cmd = config["hub_cmd"].strip()
+    hub_cmd = os.path.expandvars(
+        os.path.expanduser(config.get("hub_cmd", "hub").strip())
+    )
 
     target_directory = process_path_join_rules(
         config["path_join_rules"], os.path.abspath(args.repo)
     )
 
-    if target_directory.startswith(repo_root):
-        target_directory = target_directory[len(repo_root) + 1 :]
-    print(target_directory)
+    if not target_directory.startswith(repo_root):
+        print(
+            f"must be in repo_root ({repo_root.replace(os.environ['HOME'], '~')}) to use this command",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if not (os.path.exists(hub_cmd) or shutil.which(hub_cmd)):
+        print(
+            f"cannot find hub command '{hub_cmd}'",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    target_directory = target_directory[len(repo_root) + 1 :]
 
     cmd = [
         hub_cmd,
@@ -82,12 +97,15 @@ def do_hub_create(args, unparsed_args):
     ]
 
     if args.private:
+        print("creating private Github repository ", target_directory)
         cmd.append("--private")
+
+    else:
+        print("creating public Github repository ", target_directory)
 
     cmd.append(target_directory)
     cmd.extend(unparsed_args)
 
-    print("running:", cmd)
     subprocess.run(shlex.join(cmd), shell=True)
 
 

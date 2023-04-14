@@ -73,10 +73,8 @@ def __process_delete_path_rule__(path_rule, result):
 
 
 def process_path_rules(path_rules: list[dict], input_path: str) -> list[str]:
-    # print("process_path_rules", input_path)
     result = [input_path]
     for path_rule in path_rules:
-        # print("> path_rule", path_rule)
         if path_rule["type"] == "split":
             result = __process_split_path_rule__(path_rule, result)
 
@@ -86,18 +84,12 @@ def process_path_rules(path_rules: list[dict], input_path: str) -> list[str]:
         else:
             raise ValueError(f'unknown path_rule type {path_rule["type"]}')
 
-        # print("> result =", result)
-
     return result
 
 
-def process_path_join_rules(path_join_rules: list[dict], input_path: str) -> list[str]:
-    print("process_path_rules_reversed", input_path)
+def process_path_join_rules(path_join_rules: list[dict], input_path: str) -> str:
     result = [input_path]
     for path_join_rule in path_join_rules:
-        print("> path_join_rule", path_join_rule)
         result = __process_path_join_rule__(path_join_rule, result)
-
-        print("> result =", result)
 
     return "".join(result)
