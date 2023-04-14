@@ -2,7 +2,7 @@ import argparse
 import os
 
 
-def create_argparser(do_clone):
+def create_argparser(do_clone, do_hub_create):
     # create the top-level parser
     parser = argparse.ArgumentParser(prog="grm", allow_abbrev=False)
     parser.add_argument(
@@ -27,5 +27,24 @@ def create_argparser(do_clone):
     sp_clone.add_argument("repo", help="Repo to clone")
 
     sp_clone.set_defaults(func=do_clone)
+
+    sp_hub_create = subparsers.add_parser(
+        "hub-create",
+        help="Creates a repository in Github, using path rules to construct "
+        "the repo path",
+    )
+    sp_hub_create.add_argument(
+        "-p",
+        "--private",
+        action="store_true",
+        help="Create a private repository",
+    )
+    sp_hub_create.add_argument(
+        "repo",
+        default=os.getcwd(),
+        help="Path to repo to create",
+    )
+
+    sp_hub_create.set_defaults(func=do_hub_create)
 
     return parser

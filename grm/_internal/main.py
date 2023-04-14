@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 
 import os
+import shlex
 import subprocess
 import sys
 
 from grm._internal.argparser import create_argparser
 from grm.path_rules import process_path_rules
+from grm.path_rules import process_path_join_rules
 from grm.config import load_config
 
 
@@ -61,12 +63,41 @@ def do_clone(args, unparsed_args):
         subprocess.run(cmd)
 
 
+def do_hub_create(args, unparsed_args):
+    config = load_config(args.config)
+    repo_root = config["repo_root"]
+    hub_cmd = config["hub_cmd"].strip()
+
+    target_directory = process_path_join_rules(
+        config["path_join_rules"], os.path.abspath(args.repo)
+    )
+
+    if target_directory.startswith(repo_root):
+        target_directory = target_directory[len(repo_root) + 1 :]
+    print(target_directory)
+
+    cmd = [
+        hub_cmd,
+        "create",
+    ]
+
+    if args.private:
+        cmd.append("--private")
+
+    cmd.append(target_directory)
+    cmd.extend(unparsed_args)
+
+    print("running:", cmd)
+    subprocess.run(shlex.join(cmd), shell=True)
+
+
 def main(args=None):
     if args is None:
         args = sys.argv[1:]
 
     parser = create_argparser(
         do_clone=do_clone,
+        do_hub_create=do_hub_create,
     )
 
     args, unparsed_args = parser.parse_known_args()

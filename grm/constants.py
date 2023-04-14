@@ -29,6 +29,21 @@ DEFAULTS = {
     "clone": {
         "default_depth": 1,
     },
+
+    # path_rules should be a list of dicts that look like this:
+    #  type: <type>
+    #  exact_match: <...>
+    #  regex: <...>
+    #  limit: <...>
+    #  insert: <...>
+    #
     "path_rules": [],
+
+    # path_join_rules should be a list of dicts that look like this:
+    #  exact_match: <...>
+    #  replace: <...>
+    #
+    "path_join_rules": [],
+
     "include_default_path_rules": True,
 }
