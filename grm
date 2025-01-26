@@ -1,0 +1,17 @@
+#!/bin/sh
+
+set -eu
+dn=$(dirname "$0")
+
+export PYTHONPATH=$dn/src
+
+if [ ${DEBUG:-0} -eq 1 ]; then
+    pdm run \
+      pudb \
+      -m grm._internal.main \
+      "$@"
+else
+    pdm run \
+      grm \
+      "$@"
+fi
