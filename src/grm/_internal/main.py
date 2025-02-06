@@ -5,6 +5,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import click
 
 from grm._internal.argparser import create_argparser
 from grm.path_rules import process_path_rules
@@ -12,14 +13,30 @@ from grm.path_rules import process_path_join_rules
 from grm.config import load_config
 
 
-def do_clone(args, unparsed_args):
-    config = load_config(args.config)
+@click.group
+def main():
+    pass
 
-    target_directory = process_path_rules(config["path_rules"], args.repo)
+
+@main.command
+@click.option("--depth")
+@click.option(
+    "--auto-pull/--no-auto-pull",
+    help="If specified and the local repo already exists, pull the latest commits from the default origin instead",
+)
+@click.option(
+    "--config",
+    default=os.path.expanduser("~/.config/grm/grm.yaml"),
+)
+@click.argument("repo")
+def clone(config, auto_pull, depth, repo):
+    config = load_config(config)
+
+    target_directory = process_path_rules(config["path_rules"], repo)
     target_directory = os.path.join(config["repo_root"], *target_directory)
 
     if os.path.exists(target_directory):
-        if not args.auto_pull:
+        if not auto_pull:
             sys.exit(
                 f"directory {target_directory} already exists, use --auto-pull to pull instead"
             )
@@ -38,8 +55,8 @@ def do_clone(args, unparsed_args):
         except subprocess.CalledProcessError as ex:
             sys.exit(f"error while trying to auto-pull {target_directory}: {ex.stderr}")
 
-        if target_directory_repo != args.repo:
-            print(f"{target_directory_repo} != {args.repo}", file=sys.stderr)
+        if target_directory_repo != repo:
+            print(f"{target_directory_repo} != {repo}", file=sys.stderr)
             sys.exit(
                 f"error while trying to auto-pull: a different repository is checked out at {target_directory}"
             )
@@ -50,29 +67,36 @@ def do_clone(args, unparsed_args):
         cmd = [
             "git",
             "clone",
-            args.repo,
+            repo,
             target_directory,
         ]
 
-        if args.depth is not None:
-            if args.depth != -1:
-                cmd.append(f"--depth={args.depth}")
+        if depth is not None:
+            if depth != -1:
+                cmd.append(f"--depth={depth}")
         elif config["clone"]["default_depth"] != -1:
             cmd.append(f"--depth={config['clone']['default_depth']}")
 
-        cmd.extend(unparsed_args)
+        #cmd.extend(unparsed_args)
         subprocess.run(cmd)
 
 
-def do_hub_create(args, unparsed_args):
-    config = load_config(args.config)
+@main.command
+@click.option("--private/--no-private", "-p/-P", type=bool, required=True)
+@click.option(
+    "--config",
+    default=os.path.expanduser("~/.config/grm/grm.yaml"),
+)
+@click.argument("repo")
+def create(repo, config, private):
+    config = load_config(config)
     repo_root = config["repo_root"]
     hub_cmd = os.path.expandvars(
         os.path.expanduser(config.get("hub_cmd", "hub").strip())
     )
 
     target_directory = process_path_join_rules(
-        config["path_join_rules"], os.path.abspath(args.repo)
+        config["path_join_rules"], os.path.abspath(repo)
     )
 
     if not target_directory.startswith(repo_root):
@@ -96,7 +120,7 @@ def do_hub_create(args, unparsed_args):
         "create",
     ]
 
-    if args.private:
+    if private:
         print("creating private Github repository ", target_directory)
         cmd.append("--private")
 
@@ -104,28 +128,14 @@ def do_hub_create(args, unparsed_args):
         print("creating public Github repository ", target_directory)
 
     cmd.append(target_directory)
-    cmd.extend(unparsed_args)
+    #cmd.extend(unparsed_args)
 
     subprocess.run(shlex.join(cmd), shell=True)
 
 
-def do_update(args, unparsed_args):
+@main.command
+def update():
     raise NotImplementedError()
-
-
-def main(args=None):
-    if args is None:
-        args = sys.argv[1:]
-
-    parser = create_argparser(
-        do_clone=do_clone,
-        do_hub_create=do_hub_create,
-        do_update=do_update,
-    )
-
-    args, unparsed_args = parser.parse_known_args()
-
-    args.func(args, unparsed_args)
 
 
 if __name__ == "__main__":
