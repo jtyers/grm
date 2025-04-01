@@ -1,7 +1,9 @@
 #!/bin/sh
 
 set -eu
-export PDM_PROJECT=$(dirname "$0")
+# use readlink so that $0 points to the right place even when executing
+# the script via a symlink
+export PDM_PROJECT="$(dirname "$(readlink -f "$0")")"
 
 if [ ${DEBUG:-0} -eq 1 ]; then
     pdm run \
