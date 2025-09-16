@@ -1,17 +1,329 @@
-#!/bin/sh
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.8"
+# dependencies = ["click", "pyyaml"]
+# ///
 
-set -eu
-# use readlink so that $0 points to the right place even when executing
-# the script via a symlink
-export PDM_PROJECT="$(dirname "$(readlink -f "$0")")"
+"""
+grm - Git Repository Manager
+A single-file executable version created by combining all modules
+"""
 
-if [ ${DEBUG:-0} -eq 1 ]; then
-    pdm run \
-      pudb \
-      -m grm._internal.main \
-      "$@"
-else
-    pdm run \
-      python -m grm._internal.main \
-      "$@"
-fi
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import yaml
+import click
+
+
+# === util.py ===
+# https://stackoverflow.com/a/7205107
+def deep_merge_dicts(a, b, path=None):
+    """Deep-merge two dicts together. b will be merged into a, thus keys
+    in b take precedence, and a will be mutated. a is also returned."""
+    if path is None:
+        path = []
+    for key in b:
+        if key in a:
+            if isinstance(a[key], dict) and isinstance(b[key], dict):
+                deep_merge_dicts(a[key], b[key], path + [str(key)])
+            elif a[key] == b[key]:
+                pass  # same leaf value
+            else:
+                a[key] = b[key]
+        else:
+            a[key] = b[key]
+    return a
+
+
+# === constants.py ===
+DEFAULT_PATH_RULES = [
+    {
+        "type": "delete",
+        "regex": "^https://[^/]+/",
+    },
+    {
+        "type": "delete",
+        "regex": "^.*:",
+    },
+    {
+        "type": "delete",
+        "regex": ".git$",
+    },
+    {
+        "type": "split",
+        "exact_match": ":",
+        "limit": 1,
+    },
+    {
+        "type": "split",
+        "exact_match": "/",
+    },
+]
+
+DEFAULTS = {
+    "repo_root": os.path.expanduser("~/git"),
+    "clone": {
+        "default_depth": 1,
+    },
+
+    # path_rules should be a list of dicts that look like this:
+    #  type: <type>
+    #  exact_match: <...>
+    #  regex: <...>
+    #  limit: <...>
+    #  insert: <...>
+    #
+    "path_rules": [],
+
+    # path_join_rules should be a list of dicts that look like this:
+    #  exact_match: <...>
+    #  replace: <...>
+    #
+    "path_join_rules": [],
+
+    "include_default_path_rules": True,
+}
+
+
+# === path_rules.py ===
+def __process_split_path_rule__(path_rule, result):
+    # Processes a "type: split" path rule, where we split the path on a
+    # string (currently exact_match supported only), and then optionally
+    # insert some other string at the split-point.
+    if "exact_match" in path_rule:
+        new_result = []
+        for r in result:
+            s = r.split(path_rule["exact_match"], maxsplit=path_rule.get("limit", -1))
+
+            if path_rule.get("insert", None) and len(s) > 1:
+                # If the path_rule says to insert a string where the
+                # splits occurred, we need some guesswork to workout
+                # where the splits did indeed occur.
+                #
+                # To do this we insert at odd-number indexes until the
+                # penultimate item is the insert value (showing we've
+                # reached the last split point in the string).
+                count = 1
+                while s[-2] != path_rule["insert"]:
+                    s.insert(count, path_rule["insert"])
+                    count += 2
+
+            new_result.extend(s)
+
+        return new_result
+
+    else:
+        raise ValueError(
+            'path_rules items where type == "split" must'
+            + " have an exact_match specified"
+        )
+
+
+def __process_path_join_rule__(path_join_rule: dict, result: list[str]) -> list[str]:
+    # Processes a "type: split" path rule, but in reverse. Instead of
+    # splitting, then inserting, we split on the insertion, then join
+    # using the split exact_match.
+    if "exact_match" in path_join_rule:
+        new_result: list[str] = []
+        for r in result:
+            new_result.append(
+                r.replace(path_join_rule["exact_match"], path_join_rule["replace"])
+            )
+
+        return new_result
+
+    else:
+        raise ValueError(
+            'path_rules items where type == "split" must'
+            + " have an exact_match specified"
+        )
+
+
+def __process_delete_path_rule__(path_rule, result):
+    new_result = list(result)
+
+    if "regex" in path_rule:
+        regex = re.compile(path_rule["regex"])
+
+        m = regex.search(new_result[0])
+        if m:
+            new_result[0] = new_result[0][0 : m.start()] + new_result[0][m.end() :]
+
+        return new_result
+
+    else:
+        raise ValueError(
+            'path_rules items where type == "delete" must have a regex' " specified"
+        )
+
+
+def process_path_rules(path_rules: list[dict], input_path: str) -> list[str]:
+    result = [input_path]
+    for path_rule in path_rules:
+        if path_rule["type"] == "split":
+            result = __process_split_path_rule__(path_rule, result)
+
+        elif path_rule["type"] == "delete":
+            result = __process_delete_path_rule__(path_rule, result)
+
+        else:
+            raise ValueError(f'unknown path_rule type {path_rule["type"]}')
+
+    return result
+
+
+def process_path_join_rules(path_join_rules: list[dict], input_path: str) -> str:
+    result = [input_path]
+    for path_join_rule in path_join_rules:
+        result = __process_path_join_rule__(path_join_rule, result)
+
+    return "".join(result)
+
+
+# === config.py ===
+def load_config(config_file):
+    result = {}
+    if os.path.exists(config_file):
+        with open(config_file, "r") as f:
+            result = yaml.safe_load(f)
+
+    result = deep_merge_dicts(DEFAULTS, result)
+
+    if result["include_default_path_rules"]:
+        result["path_rules"] = DEFAULT_PATH_RULES + result["path_rules"]
+
+    return result
+
+
+# === main.py ===
+@click.group()
+def main():
+    pass
+
+
+@main.command()
+@click.option("--depth")
+@click.option(
+    "--auto-pull/--no-auto-pull",
+    help="If specified and the local repo already exists, pull the latest commits from the default origin instead",
+)
+@click.option(
+    "--config",
+    default=os.path.expanduser("~/.config/grm/grm.yaml"),
+)
+@click.argument("repo")
+def clone(config, auto_pull, depth, repo):
+    config = load_config(config)
+
+    target_directory = process_path_rules(config["path_rules"], repo)
+    target_directory = os.path.join(config["repo_root"], *target_directory)
+
+    if os.path.exists(target_directory):
+        if not auto_pull:
+            sys.exit(
+                f"directory {target_directory} already exists, use --auto-pull to pull instead"
+            )
+
+        # check it's for the same repo
+        try:
+            p = subprocess.run(
+                ["git", "-C", target_directory, "config", "remote.origin.url"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            target_directory_repo = p.stdout.strip()
+
+        except subprocess.CalledProcessError as ex:
+            sys.exit(f"error while trying to auto-pull {target_directory}: {ex.stderr}")
+
+        if target_directory_repo != repo:
+            print(f"{target_directory_repo} != {repo}", file=sys.stderr)
+            sys.exit(
+                f"error while trying to auto-pull: a different repository is checked out at {target_directory}"
+            )
+
+        subprocess.run(["git", "-C", target_directory, "pull", "--ff-only"])
+
+    else:
+        cmd = [
+            "git",
+            "clone",
+            repo,
+            target_directory,
+        ]
+
+        if depth is not None:
+            if depth != -1:
+                cmd.append(f"--depth={depth}")
+        elif config["clone"]["default_depth"] != -1:
+            cmd.append(f"--depth={config['clone']['default_depth']}")
+
+        subprocess.run(cmd)
+
+
+@main.command()
+@click.option("--private/--no-private", "-p/-P", type=bool, required=True)
+@click.option(
+    "--config",
+    default=os.path.expanduser("~/.config/grm/grm.yaml"),
+)
+@click.argument("repo")
+def create(repo, config, private):
+    config = load_config(config)
+    repo_root = config["repo_root"]
+    hub_cmd = os.path.expandvars(
+        os.path.expanduser(config.get("hub_cmd", "hub").strip())
+    )
+
+    target_directory = process_path_join_rules(
+        config["path_join_rules"], os.path.abspath(repo)
+    )
+
+    if not target_directory.startswith(repo_root):
+        print(
+            f"must be in repo_root ({repo_root.replace(os.environ['HOME'], '~')}) to use this command",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if not (os.path.exists(hub_cmd) or shutil.which(hub_cmd)):
+        print(
+            f"cannot find hub command '{hub_cmd}'",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    target_directory = target_directory[len(repo_root) + 1 :]
+
+    cmd = [
+        hub_cmd,
+        "create",
+    ]
+
+    if private:
+        print("creating private Github repository ", target_directory)
+        cmd.append("--private")
+
+    else:
+        print("creating public Github repository ", target_directory)
+
+    cmd.append(target_directory)
+
+    subprocess.run(shlex.join(cmd), shell=True)
+
+
+@main.command()
+def update():
+    raise NotImplementedError()
+
+
+if __name__ == "__main__":
+    main()
+
+# vim: ft=python
