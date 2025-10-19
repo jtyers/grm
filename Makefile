@@ -10,7 +10,7 @@ init:
 
 .PHONY: test
 test:
-	#pytest tests
+	./test_grm.py
 
 .PHONY: build_dist
 build_dist: test
