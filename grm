@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.8"
-# dependencies = ["click", "pyyaml"]
+# dependencies = ["typer", "pyyaml"]
 # ///
 
 """
@@ -9,6 +9,8 @@ grm - Git Repository Manager
 A single-file executable version created by combining all modules
 """
 
+from dataclasses import dataclass, field
+from typing import Optional
 import os
 import re
 import shlex
@@ -16,12 +18,12 @@ import shutil
 import subprocess
 import sys
 import yaml
-import click
+import typer
 
 
 # === util.py ===
 # https://stackoverflow.com/a/7205107
-def deep_merge_dicts(a, b, path=None):
+def deep_merge_dicts(a: dict, b: dict, path: Optional[list] = None) -> dict:
     """Deep-merge two dicts together. b will be merged into a, thus keys
     in b take precedence, and a will be mutated. a is also returned."""
     if path is None:
@@ -39,68 +41,28 @@ def deep_merge_dicts(a, b, path=None):
     return a
 
 
-# === constants.py ===
-DEFAULT_PATH_RULES = [
-    {
-        "type": "delete",
-        "regex": "^https://[^/]+/",
-    },
-    {
-        "type": "delete",
-        "regex": "^.*:",
-    },
-    {
-        "type": "delete",
-        "regex": ".git$",
-    },
-    {
-        "type": "split",
-        "exact_match": ":",
-        "limit": 1,
-    },
-    {
-        "type": "split",
-        "exact_match": "/",
-    },
-]
+# === path_rules.py - Dataclasses ===
+@dataclass
+class SplitPathRule:
+    """Path rule that splits a path on an exact match string."""
+    exact_match: str
+    limit: int = -1
+    insert: Optional[str] = None
 
-DEFAULTS = {
-    "repo_root": os.path.expanduser("~/git"),
-    "clone": {
-        "default_depth": 1,
-    },
+    @staticmethod
+    def from_dict(rule_dict: dict) -> "SplitPathRule":
+        """Create a SplitPathRule from a dictionary."""
+        return SplitPathRule(**rule_dict)
 
-    # path_rules should be a list of dicts that look like this:
-    #  type: <type>
-    #  exact_match: <...>
-    #  regex: <...>
-    #  limit: <...>
-    #  insert: <...>
-    #
-    "path_rules": [],
-
-    # path_join_rules should be a list of dicts that look like this:
-    #  exact_match: <...>
-    #  replace: <...>
-    #
-    "path_join_rules": [],
-
-    "include_default_path_rules": True,
-}
-
-
-# === path_rules.py ===
-def __process_split_path_rule__(path_rule, result):
-    # Processes a "type: split" path rule, where we split the path on a
-    # string (currently exact_match supported only), and then optionally
-    # insert some other string at the split-point.
-    if "exact_match" in path_rule:
+    def process(self, result: list[str]) -> list[str]:
+        """Processes a split path rule, splitting the path on exact_match
+        and optionally inserting a string at split points."""
         new_result = []
         for r in result:
-            s = r.split(path_rule["exact_match"], maxsplit=path_rule.get("limit", -1))
+            s = r.split(self.exact_match, maxsplit=self.limit)
 
-            if path_rule.get("insert", None) and len(s) > 1:
-                # If the path_rule says to insert a string where the
+            if self.insert and len(s) > 1:
+                # If the rule says to insert a string where the
                 # splits occurred, we need some guesswork to workout
                 # where the splits did indeed occur.
                 #
@@ -108,119 +70,204 @@ def __process_split_path_rule__(path_rule, result):
                 # penultimate item is the insert value (showing we've
                 # reached the last split point in the string).
                 count = 1
-                while s[-2] != path_rule["insert"]:
-                    s.insert(count, path_rule["insert"])
+                while s[-2] != self.insert:
+                    s.insert(count, self.insert)
                     count += 2
 
             new_result.extend(s)
 
         return new_result
 
-    else:
-        raise ValueError(
-            'path_rules items where type == "split" must'
-            + " have an exact_match specified"
-        )
 
+@dataclass
+class DeletePathRule:
+    """Path rule that deletes a portion of the path matching a regex."""
+    regex: str
 
-def __process_path_join_rule__(path_join_rule: dict, result: list[str]) -> list[str]:
-    # Processes a "type: split" path rule, but in reverse. Instead of
-    # splitting, then inserting, we split on the insertion, then join
-    # using the split exact_match.
-    if "exact_match" in path_join_rule:
-        new_result: list[str] = []
-        for r in result:
-            new_result.append(
-                r.replace(path_join_rule["exact_match"], path_join_rule["replace"])
-            )
+    @staticmethod
+    def from_dict(rule_dict: dict) -> "DeletePathRule":
+        """Create a DeletePathRule from a dictionary."""
+        return DeletePathRule(**rule_dict)
 
-        return new_result
+    def process(self, result: list[str]) -> list[str]:
+        """Processes a delete path rule, removing regex matches from the first element."""
+        new_result = list(result)
+        compiled_regex = re.compile(self.regex)
 
-    else:
-        raise ValueError(
-            'path_rules items where type == "split" must'
-            + " have an exact_match specified"
-        )
-
-
-def __process_delete_path_rule__(path_rule, result):
-    new_result = list(result)
-
-    if "regex" in path_rule:
-        regex = re.compile(path_rule["regex"])
-
-        m = regex.search(new_result[0])
+        m = compiled_regex.search(new_result[0])
         if m:
             new_result[0] = new_result[0][0 : m.start()] + new_result[0][m.end() :]
 
         return new_result
 
-    else:
-        raise ValueError(
-            'path_rules items where type == "delete" must have a regex' " specified"
-        )
+
+@dataclass
+class PathJoinRule:
+    """Path join rule that reverses split operations by replacing strings."""
+    exact_match: str
+    replace: str
+
+    @staticmethod
+    def from_dict(rule_dict: dict) -> "PathJoinRule":
+        """Create a PathJoinRule from a dictionary."""
+        return PathJoinRule(**rule_dict)
+
+    def process(self, result: list[str]) -> list[str]:
+        """Processes a path join rule, replacing exact_match with replace."""
+        new_result: list[str] = []
+        for r in result:
+            new_result.append(r.replace(self.exact_match, self.replace))
+
+        return new_result
 
 
-def process_path_rules(path_rules: list[dict], input_path: str) -> list[str]:
+# Type aliases for path rules
+PathRule = SplitPathRule | DeletePathRule
+PathRules = list[PathRule]
+PathJoinRules = list[PathJoinRule]
+
+
+# === constants.py ===
+DEFAULT_PATH_RULES: PathRules = [
+    DeletePathRule(regex="^https://[^/]+/"),
+    DeletePathRule(regex="^.*:"),
+    DeletePathRule(regex=".git$"),
+    SplitPathRule(exact_match=":", limit=1),
+    SplitPathRule(exact_match="/"),
+]
+
+
+@dataclass
+class CloneConfig:
+    """Configuration for clone operations."""
+    default_depth: int = 1
+
+
+@dataclass
+class Config:
+    """Main configuration for grm."""
+    repo_root: str
+    clone: CloneConfig
+    path_rules: PathRules
+    path_join_rules: PathJoinRules
+    include_default_path_rules: bool = True
+    hub_cmd: str = "hub"
+
+
+DEFAULT_CONFIG = Config(
+    repo_root=os.path.expanduser("~/git"),
+    clone=CloneConfig(default_depth=1),
+    path_rules=[],
+    path_join_rules=[],
+    include_default_path_rules=True,
+    hub_cmd="hub",
+)
+
+
+# === path_rules.py - Processing Functions ===
+def process_path_rules(path_rules: PathRules, input_path: str) -> list[str]:
+    """Process path rules to transform an input path into a list of path components."""
     result = [input_path]
     for path_rule in path_rules:
-        if path_rule["type"] == "split":
-            result = __process_split_path_rule__(path_rule, result)
-
-        elif path_rule["type"] == "delete":
-            result = __process_delete_path_rule__(path_rule, result)
-
-        else:
-            raise ValueError(f'unknown path_rule type {path_rule["type"]}')
-
+        result = path_rule.process(result)
     return result
 
 
-def process_path_join_rules(path_join_rules: list[dict], input_path: str) -> str:
+def process_path_join_rules(path_join_rules: PathJoinRules, input_path: str) -> str:
+    """Process path join rules to reverse the path transformation."""
     result = [input_path]
     for path_join_rule in path_join_rules:
-        result = __process_path_join_rule__(path_join_rule, result)
-
+        result = path_join_rule.process(result)
     return "".join(result)
 
 
 # === config.py ===
-def load_config(config_file):
-    result = {}
+def _parse_path_rule_from_dict(rule_dict: dict) -> PathRule:
+    """Convert a dict from YAML into a PathRule dataclass."""
+    rule_type = rule_dict.pop("type")
+
+    if rule_type == "split":
+        return SplitPathRule.from_dict(rule_dict)
+    elif rule_type == "delete":
+        return DeletePathRule.from_dict(rule_dict)
+    else:
+        raise ValueError(f'unknown path_rule type {rule_type}')
+
+
+def _parse_path_join_rule_from_dict(rule_dict: dict) -> PathJoinRule:
+    """Convert a dict from YAML into a PathJoinRule dataclass."""
+    return PathJoinRule.from_dict(rule_dict)
+
+
+def load_config(config_file: str) -> Config:
+    """Load configuration from YAML file and merge with defaults."""
+    user_config = {}
     if os.path.exists(config_file):
         with open(config_file, "r") as f:
-            result = yaml.safe_load(f)
+            loaded = yaml.safe_load(f)
+            if loaded:
+                user_config = loaded
 
-    result = deep_merge_dicts(DEFAULTS, result)
+    # Start with default config as dict
+    config_dict = {
+        "repo_root": DEFAULT_CONFIG.repo_root,
+        "clone": {"default_depth": DEFAULT_CONFIG.clone.default_depth},
+        "path_rules": [],
+        "path_join_rules": [],
+        "include_default_path_rules": DEFAULT_CONFIG.include_default_path_rules,
+        "hub_cmd": DEFAULT_CONFIG.hub_cmd,
+    }
 
-    if result["include_default_path_rules"]:
-        result["path_rules"] = DEFAULT_PATH_RULES + result["path_rules"]
+    # Merge user config
+    config_dict = deep_merge_dicts(config_dict, user_config)
 
-    return result
+    # Parse path rules from dicts to dataclasses
+    path_rules: PathRules = []
+    if config_dict["include_default_path_rules"]:
+        path_rules.extend(DEFAULT_PATH_RULES)
+
+    for rule_dict in config_dict.get("path_rules", []):
+        path_rules.append(_parse_path_rule_from_dict(rule_dict))
+
+    # Parse path join rules
+    path_join_rules: PathJoinRules = []
+    for rule_dict in config_dict.get("path_join_rules", []):
+        path_join_rules.append(_parse_path_join_rule_from_dict(rule_dict))
+
+    # Create Config object
+    return Config(
+        repo_root=config_dict["repo_root"],
+        clone=CloneConfig(default_depth=config_dict["clone"]["default_depth"]),
+        path_rules=path_rules,
+        path_join_rules=path_join_rules,
+        include_default_path_rules=config_dict["include_default_path_rules"],
+        hub_cmd=config_dict.get("hub_cmd", "hub"),
+    )
 
 
 # === main.py ===
-@click.group()
-def main():
-    pass
+app = typer.Typer()
 
 
-@main.command()
-@click.option("--depth")
-@click.option(
-    "--auto-pull/--no-auto-pull",
-    help="If specified and the local repo already exists, pull the latest commits from the default origin instead",
-)
-@click.option(
-    "--config",
-    default=os.path.expanduser("~/.config/grm/grm.yaml"),
-)
-@click.argument("repo")
-def clone(config, auto_pull, depth, repo):
-    config = load_config(config)
+@app.command()
+def clone(
+    repo: str,
+    depth: Optional[int] = typer.Option(None, help="Clone depth (use -1 for unlimited)"),
+    auto_pull: bool = typer.Option(
+        False,
+        help="If specified and the local repo already exists, pull the latest commits from the default origin instead",
+    ),
+    config_file: str = typer.Option(
+        os.path.expanduser("~/.config/grm/grm.yaml"),
+        "--config",
+        help="Path to configuration file",
+    ),
+) -> None:
+    """Clone a repository using grm path rules."""
+    config = load_config(config_file)
 
-    target_directory = process_path_rules(config["path_rules"], repo)
-    target_directory = os.path.join(config["repo_root"], *target_directory)
+    target_directory = process_path_rules(config.path_rules, repo)
+    target_directory = os.path.join(config.repo_root, *target_directory)
 
     if os.path.exists(target_directory):
         if not auto_pull:
@@ -261,28 +308,31 @@ def clone(config, auto_pull, depth, repo):
         if depth is not None:
             if depth != -1:
                 cmd.append(f"--depth={depth}")
-        elif config["clone"]["default_depth"] != -1:
-            cmd.append(f"--depth={config['clone']['default_depth']}")
+        elif config.clone.default_depth != -1:
+            cmd.append(f"--depth={config.clone.default_depth}")
 
         subprocess.run(cmd)
 
 
-@main.command()
-@click.option("--private/--no-private", "-p/-P", type=bool, required=True)
-@click.option(
-    "--config",
-    default=os.path.expanduser("~/.config/grm/grm.yaml"),
-)
-@click.argument("repo")
-def create(repo, config, private):
-    config = load_config(config)
-    repo_root = config["repo_root"]
+@app.command()
+def create(
+    repo: str,
+    private: bool = typer.Option(..., "--private/--no-private", "-p/-P", help="Create a private or public repository"),
+    config_file: str = typer.Option(
+        os.path.expanduser("~/.config/grm/grm.yaml"),
+        "--config",
+        help="Path to configuration file",
+    ),
+) -> None:
+    """Create a new repository on GitHub."""
+    config = load_config(config_file)
+    repo_root = config.repo_root
     hub_cmd = os.path.expandvars(
-        os.path.expanduser(config.get("hub_cmd", "hub").strip())
+        os.path.expanduser(config.hub_cmd.strip())
     )
 
     target_directory = process_path_join_rules(
-        config["path_join_rules"], os.path.abspath(repo)
+        config.path_join_rules, os.path.abspath(repo)
     )
 
     if not target_directory.startswith(repo_root):
@@ -318,12 +368,26 @@ def create(repo, config, private):
     subprocess.run(shlex.join(cmd), shell=True)
 
 
-@main.command()
-def update():
+@app.command()
+def update() -> None:
+    """Update repositories (not yet implemented)."""
     raise NotImplementedError()
 
 
+@app.command()
+def show_config(
+    config_file: str = typer.Option(
+        os.path.expanduser("~/.config/grm/grm.yaml"),
+        "--config",
+        help="Path to configuration file",
+    ),
+) -> None:
+    """Display the loaded configuration."""
+    config = load_config(config_file)
+    print(config)
+
+
 if __name__ == "__main__":
-    main()
+    app()
 
 # vim: ft=python
