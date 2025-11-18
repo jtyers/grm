@@ -103,9 +103,24 @@ class DeletePathRule:
 
 @dataclass
 class ReplacePathJoinRule:
-    """Path join rule that reverses split operations by replacing strings."""
-    exact_match: str
-    replace: str
+    """Path join rule that reverses split operations by replacing strings.
+
+    Supports two modes:
+    - exact_match: Simple string replacement
+    - regex: Regular expression matching and replacement
+
+    Exactly one of exact_match or regex must be specified.
+    """
+    exact_match: Optional[str] = None
+    regex: Optional[str] = None
+    replace: str = ""
+
+    def __post_init__(self):
+        """Validate that exactly one of exact_match or regex is specified."""
+        if self.exact_match is not None and self.regex is not None:
+            raise ValueError("ReplacePathJoinRule: only one of 'exact_match' or 'regex' can be specified")
+        if self.exact_match is None and self.regex is None:
+            raise ValueError("ReplacePathJoinRule: one of 'exact_match' or 'regex' must be specified")
 
     @staticmethod
     def from_dict(rule_dict: dict) -> "ReplacePathJoinRule":
@@ -113,10 +128,18 @@ class ReplacePathJoinRule:
         return ReplacePathJoinRule(**rule_dict)
 
     def process(self, result: list[str]) -> list[str]:
-        """Processes a path join rule, replacing exact_match with replace."""
+        """Processes a path join rule, replacing exact_match or regex pattern with replace."""
         new_result: list[str] = []
-        for r in result:
-            new_result.append(r.replace(self.exact_match, self.replace))
+
+        if self.exact_match is not None:
+            # Simple string replacement
+            for r in result:
+                new_result.append(r.replace(self.exact_match, self.replace))
+        else:
+            # Regex replacement
+            compiled_regex = re.compile(self.regex)
+            for r in result:
+                new_result.append(compiled_regex.sub(self.replace, r))
 
         return new_result
 
@@ -187,20 +210,47 @@ DEFAULT_CONFIG = Config(
 
 
 # === path_rules.py - Processing Functions ===
-def process_path_rules(path_rules: PathRules, input_path: str) -> list[str]:
+def process_path_rules(path_rules: PathRules, input_path: str, debug: bool = False) -> list[str]:
     """Process path rules to transform an input path into a list of path components."""
     result = [input_path]
-    for path_rule in path_rules:
-        result = path_rule.process(result)
+
+    if debug:
+        print(f"\nProcessing path rules for: {input_path}")
+        print(f"Initial: {result}")
+
+    for i, path_rule in enumerate(path_rules, 1):
+        new_result = path_rule.process(result)
+        if debug:
+            print(f"  Rule {i} ({path_rule.__class__.__name__}): {path_rule}")
+            print(f"    Result: {new_result}")
+        result = new_result
+
+    if debug:
+        print(f"Final result: {result}\n")
+
     return result
 
 
-def process_path_join_rules(path_join_rules: PathJoinRules, input_path: str) -> str:
+def process_path_join_rules(path_join_rules: PathJoinRules, input_path: str, debug: bool = False) -> str:
     """Process path join rules to reverse the path transformation."""
     result = [input_path]
-    for path_join_rule in path_join_rules:
-        result = path_join_rule.process(result)
-    return "".join(result)
+
+    if debug:
+        print(f"\nProcessing path join rules for: {input_path}")
+        print(f"Initial: {result}")
+
+    for i, path_join_rule in enumerate(path_join_rules, 1):
+        new_result = path_join_rule.process(result)
+        if debug:
+            print(f"  Rule {i} ({path_join_rule.__class__.__name__}): {path_join_rule}")
+            print(f"    Result: {new_result}")
+        result = new_result
+
+    final_result = "".join(result)
+    if debug:
+        print(f"Final result: {final_result}\n")
+
+    return final_result
 
 
 # === config.py ===
@@ -218,7 +268,7 @@ def _parse_path_rule_from_dict(rule_dict: dict) -> PathRule:
 
 def _parse_path_join_rule_from_dict(rule_dict: dict) -> PathJoinRule:
     """Convert a dict from YAML into a PathJoinRule dataclass."""
-    rule_type = rule_dict.pop("type", "replace")  # Default to "replace" for backward compatibility
+    rule_type = rule_dict.pop("type")
 
     if rule_type == "replace":
         return ReplacePathJoinRule.from_dict(rule_dict)
@@ -286,6 +336,11 @@ def clone(
         False,
         help="If specified and the local repo already exists, pull the latest commits from the default origin instead",
     ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Show the git commands that would be run without executing them",
+    ),
     config_file: str = typer.Option(
         os.path.expanduser("~/.config/grm/grm.yaml"),
         "--config",
@@ -295,7 +350,7 @@ def clone(
     """Clone a repository using grm path rules."""
     config = load_config(config_file)
 
-    target_directory = process_path_rules(config.path_rules, repo)
+    target_directory = process_path_rules(config.path_rules, repo, debug=dry_run)
     target_directory = os.path.join(config.repo_root, *target_directory)
 
     if os.path.exists(target_directory):
@@ -324,7 +379,11 @@ def clone(
                 f"error while trying to auto-pull: a different repository is checked out at {target_directory}"
             )
 
-        subprocess.run(["git", "-C", target_directory, "pull", "--ff-only"])
+        cmd = ["git", "-C", target_directory, "pull", "--ff-only"]
+        if dry_run:
+            print(shlex.join(cmd))
+        else:
+            subprocess.run(cmd)
 
     else:
         cmd = [
@@ -340,13 +399,21 @@ def clone(
         elif config.clone.default_depth != -1:
             cmd.append(f"--depth={config.clone.default_depth}")
 
-        subprocess.run(cmd)
+        if dry_run:
+            print(shlex.join(cmd))
+        else:
+            subprocess.run(cmd)
 
 
 @app.command()
 def create(
     repo: str,
     private: bool = typer.Option(..., "--private/--no-private", "-p/-P", help="Create a private or public repository"),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Show the git commands that would be run without executing them",
+    ),
     config_file: str = typer.Option(
         os.path.expanduser("~/.config/grm/grm.yaml"),
         "--config",
@@ -361,7 +428,7 @@ def create(
     )
 
     target_directory = process_path_join_rules(
-        config.path_join_rules, os.path.abspath(repo)
+        config.path_join_rules, os.path.abspath(repo), debug=dry_run
     )
 
     if not target_directory.startswith(repo_root):
@@ -371,7 +438,7 @@ def create(
         )
         sys.exit(1)
 
-    if not (os.path.exists(hub_cmd) or shutil.which(hub_cmd)):
+    if not dry_run and not (os.path.exists(hub_cmd) or shutil.which(hub_cmd)):
         print(
             f"cannot find hub command '{hub_cmd}'",
             file=sys.stderr,
@@ -394,7 +461,10 @@ def create(
 
     cmd.append(target_directory)
 
-    subprocess.run(shlex.join(cmd), shell=True)
+    if dry_run:
+        print(shlex.join(cmd))
+    else:
+        subprocess.run(shlex.join(cmd), shell=True)
 
 
 @app.command()

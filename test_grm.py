@@ -62,6 +62,45 @@ def test_delete_path_join_rule_multiple_matches():
     assert result == ['foo--bar']
 
 
+def test_replace_path_join_rule_regex_basic():
+    """Test ReplacePathJoinRule with regex mode."""
+    rule = ReplacePathJoinRule(regex=r'/git/', replace='/code/')
+    result = rule.process(['/home/user/git/repo'])
+    assert result == ['/home/user/code/repo']
+
+
+def test_replace_path_join_rule_regex_pattern():
+    """Test ReplacePathJoinRule with regex pattern."""
+    rule = ReplacePathJoinRule(regex=r'(internal|external)', replace='common')
+    result = rule.process(['/home/internal/repo', '/home/external/repo'])
+    assert result == ['/home/common/repo', '/home/common/repo']
+
+
+def test_replace_path_join_rule_regex_capture_groups():
+    """Test ReplacePathJoinRule with regex capture groups."""
+    rule = ReplacePathJoinRule(regex=r'/(\w+)-modules/', replace=r'/\1/')
+    result = rule.process(['/home/tf-modules/repo', '/home/py-modules/code'])
+    assert result == ['/home/tf/repo', '/home/py/code']
+
+
+def test_replace_path_join_rule_validation_both():
+    """Test that specifying both exact_match and regex raises error."""
+    try:
+        ReplacePathJoinRule(exact_match='/foo/', regex=r'/bar/', replace='test')
+        assert False, "Should have raised ValueError"
+    except ValueError as e:
+        assert "only one of 'exact_match' or 'regex'" in str(e)
+
+
+def test_replace_path_join_rule_validation_neither():
+    """Test that specifying neither exact_match nor regex raises error."""
+    try:
+        ReplacePathJoinRule(replace='test')
+        assert False, "Should have raised ValueError"
+    except ValueError as e:
+        assert "one of 'exact_match' or 'regex' must be specified" in str(e)
+
+
 def test_combined_rules():
     """Test combining both rule types."""
     rules = [
