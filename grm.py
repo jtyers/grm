@@ -389,6 +389,7 @@ def clone(
         cmd = [
             "git",
             "clone",
+            "--recurse-submodules",
             repo,
             target_directory,
         ]
