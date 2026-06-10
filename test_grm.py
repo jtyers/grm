@@ -9,7 +9,11 @@ Test suite for grm path join rules
 
 import re
 from dataclasses import dataclass
-from grm import ReplacePathJoinRule, DeletePathJoinRule
+from typer.testing import CliRunner
+from grm import ReplacePathJoinRule, DeletePathJoinRule, app
+
+
+runner = CliRunner()
 
 
 def test_replace_path_join_rule_basic():
@@ -114,6 +118,47 @@ def test_combined_rules():
 
     # After delete: 'internal/repo', after replace: 'internal/repo' (no match for '/internal/')
     assert path == ['internal/repo']
+
+
+def test_clone_errors_when_target_exists_without_ignore_existing(tmp_path):
+    """Existing clone targets are still errors by default."""
+    repo_root = tmp_path / "git"
+    target = repo_root / "owner" / "repo"
+    target.mkdir(parents=True)
+    config_file = tmp_path / "grm.yaml"
+    config_file.write_text(f"repo_root: {repo_root}\n")
+
+    result = runner.invoke(
+        app,
+        ["clone", "https://example.com/owner/repo.git", "--config", str(config_file)],
+    )
+
+    assert result.exit_code != 0
+    assert "already exists" in result.output
+
+
+def test_clone_ignore_existing_returns_success_for_existing_target(tmp_path):
+    """--ignore-existing skips existing targets without validating their remote."""
+    repo_root = tmp_path / "git"
+    target = repo_root / "owner" / "repo"
+    target.mkdir(parents=True)
+    config_file = tmp_path / "grm.yaml"
+    config_file.write_text(f"repo_root: {repo_root}\n")
+
+    result = runner.invoke(
+        app,
+        [
+            "clone",
+            "https://example.com/owner/repo.git",
+            "--ignore-existing",
+            "--auto-pull",
+            "--config",
+            str(config_file),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert result.output == ""
 
 
 if __name__ == '__main__':

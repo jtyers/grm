@@ -336,6 +336,11 @@ def clone(
         False,
         help="If specified and the local repo already exists, pull the latest commits from the default origin instead",
     ),
+    ignore_existing: bool = typer.Option(
+        False,
+        "--ignore-existing",
+        help="If specified and the local repo already exists, exit successfully without checking or updating it",
+    ),
     dry_run: bool = typer.Option(
         False,
         "--dry-run",
@@ -354,6 +359,9 @@ def clone(
     target_directory = os.path.join(config.repo_root, *target_directory)
 
     if os.path.exists(target_directory):
+        if ignore_existing:
+            return
+
         if not auto_pull:
             sys.exit(
                 f"directory {target_directory} already exists, use --auto-pull to pull instead"
